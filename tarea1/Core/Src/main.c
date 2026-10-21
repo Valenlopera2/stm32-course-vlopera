@@ -61,7 +61,7 @@
 #include "stm32f4xx.h"
 
 
-// Definiendo constantes de configuración
+// Definiendo constantes de configuración.
 #define SYSTICK_RELOAD     (16000U - 1U) // Recarga para 1 ms con frecuencia de 16 MHz
 #define REFRESH_PERIOD_MS  2U            // Periodo de refresco del display en ms
 #define TIM2_PRESCALER     (16000U - 1U) // Divisor por 16000, para que el reloj del TIM2 sea de 1 kHz
