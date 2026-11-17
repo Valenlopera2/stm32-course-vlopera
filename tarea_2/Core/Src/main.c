@@ -31,7 +31,7 @@
  *  PB1        PWM al filtro RC -> seguidor MCP6002 (TIM3_CH4, AF02)
  *  PB10       Captura (TIM2_CH3, AF01), con un cable desde PC8, mide la frecuencia del PWM
  *  PA4 / PA1  Encoder CLK / DT (entradas, las lee TIM9)
- *  PA0        Botón del encoder (EXTI0): cambia el modo
+ *  PA0        Botón del encoder (EXTI0 + antirrebote con TIM10): cambia el modo
  *  PH1        LED de estado (TIM11, cambia cada 250 ms)
  *
  * ============================ SOFTWARE ============================ *
@@ -53,7 +53,10 @@
  *   una muesca cada 4 transiciones válidas; cada paso suma o resta DUTY_STEP.
  * - Frecuencia: TIM2 (32 bits) captura cada flanco de subida de PB10 y promedia FREQ_EDGES
  *   periodos en measured_freq_hz (Live Watch, debe dar unos 20000 Hz).
- * - SysTick (1 ms) lleva el tiempo del antirrebote del botón. Reloj: HSI 16 MHz.
+ * - Antirrebote: cada flanco del botón reinicia TIM10 (30 ms). Si al vencer el pin sigue en
+ *   bajo es una pulsación válida; si está en alto, el botón se soltó. Reloj: HSI 16 MHz.
+ *
+ * Timers: TIM11 = blinky, TIM3 = 4 PWM, TIM2 = captura, TIM9 = encoder, TIM10 = antirrebote.
  *
  *
  * ===================== FSM ===================== *
@@ -96,7 +99,7 @@
 #define DUTY_IDLE 200 //Duty de los tres colores en MODE_OFF, al arrancar o tras un reset (200 de 800 = 25 %)
 #define DUTY_INIT 0 //Duty con el que arranca cada modo al encender la placa (0 %)
 #define ENCODER_DIR_SIGN 1 //Poner -1 si al girar a la derecha el duty baja
-#define BUTTON_DEBOUNCE_MS 30 //Tiempo en ms que el botón debe estar sin cambios (sin flancos) antes de aceptar una pulsación nueva
+#define BUTTON_DEBOUNCE_MS 30 //Tiempo en ms que el botón debe estar sin cambios (sin flancos) antes de aceptar el nivel de TIM10
 #define BLINK_PERIOD_MS 250 //Periodo del LED de estado en ms (lo cuenta TIM11)
 #define ENCODER_SAMPLE_ARR 499 //TIM9 a 1 MHz: (499 + 1) us = 500 us, el encoder se muestrea a 2 kHz
 #define FREQ_EDGES 100 //Periodos del PWM rojo (PC8) que se promedian en cada lectura
@@ -143,8 +146,7 @@ volatile uint8_t button_flag = 0; //Bandera que deja la ISR de PA0 (volatile: ca
 volatile uint8_t blink_flag = 0; //Bandera que deja la ISR del TIM11
 volatile uint8_t freq_flag = 0; //Bandera que deja la ISR del TIM2 (captura)
 
-volatile uint32_t ticks = 0; //Milisegundos desde el arranque (los cuenta el SysTick)
-volatile uint32_t last_button_tick = 0; //Instante del último flanco del botón (válido o rebote), para el antirrebote
+volatile uint8_t button_down = 0; //1 mientras el botón está pulsado y ya se reportó (evita contar dos veces la misma pulsación)
 volatile int32_t enc_steps = 0; //Pasos del encoder pendientes (+ giro a la derecha, - a la izquierda), los suma la ISR del TIM9
 volatile uint8_t enc_sample = 3; //Última lectura de los pines (para exigir dos lecturas iguales seguidas)
 volatile uint8_t enc_prev = 3; //Último estado válido del encoder: bit 1 = CLK, bit 0 = DT (en reposo los dos están en alto: 3)
@@ -173,7 +175,7 @@ void led_Toggle(void); //Cambia el estado del LED PH1
 //Inicialización del hardware
 void init_GPIO(void);
 void init_EXTI(void);
-void init_systick(void);
+void init_timer10Debounce(void); //TIM10: antirrebote del botón
 void init_timer3PWM(void); //TIM3: los 4 canales PWM
 void init_timer2Capture(void); //TIM2: captura de la señal del PWM rojo (PC8)
 void init_timer9Encoder(void); //TIM9: muestrea el encoder a 2 kHz
@@ -190,13 +192,13 @@ int main(void){
     }
 
     init_GPIO();
+    init_timer10Debounce(); //Antes de init_EXTI: el botón ya usa este timer en su primer flanco
     init_EXTI();
     init_timer3PWM();
     init_timer2Capture();
     init_timer9Encoder();
     init_timer11Blink();
     pwm_Update(); //Estado inicial: los tres colores al 25 % (MODE_OFF)
-    init_systick(); //Último: el conteo de ms empieza con todo el hardware listo
 
     /* El ciclo infinito nunca termina: lee un evento, evalúa el estado y reacciona.
      * Regla de NO bloqueo: no hay delay(), cada pasada procesa a lo sumo UN evento y UNA transición. */
@@ -525,12 +527,18 @@ void init_EXTI(void){
 
 }
 
-void init_systick(void){
-    SysTick->LOAD = 16000-1; //16 MHz / 16000 = 1 kHz: interrumpe cada 1 ms
-    SysTick->VAL = 0; //Reinicia el contador actual
-    NVIC_SetPriority(SysTick_IRQn, 0); //Prioridad más alta: el tiempo no se debe perder
-    SysTick->CTRL |= (SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_TICKINT_Msk); //Reloj del procesador (16 MHz) e interrupción habilitada
-    SysTick->CTRL |= SysTick_CTRL_ENABLE_Msk; //Arranca el contador, siempre de último
+//TIM10 (16 bits, APB2): antirrebote del botón. Arranca en cada flanco de PA0 y vence a los 30 ms
+void init_timer10Debounce(void){
+    RCC->APB2ENR |= RCC_APB2ENR_TIM10EN; //Reloj del TIM10
+
+    TIM10->PSC = 15999; //16 MHz / 16000 = 1 kHz: 1 cuenta = 1 ms
+    TIM10->ARR = BUTTON_DEBOUNCE_MS - 1; //(29 + 1) ms = 30 ms
+    TIM10->EGR |= TIM_EGR_UG; //Carga PSC y ARR
+    TIM10->SR &= ~TIM_SR_UIF; //Limpia la bandera que dejó la actualización
+    TIM10->DIER |= TIM_DIER_UIE; //Interrupción por desborde (update)
+    NVIC_SetPriority(TIM1_UP_TIM10_IRQn, 1); //Misma prioridad que el botón
+    __NVIC_EnableIRQ(TIM1_UP_TIM10_IRQn); //TIM10 comparte este vector con la actualización del TIM1, que no se usa
+    //No se arranca aquí: lo arranca cada flanco del botón
 }
 
 //TIM3: un solo timer para los 4 canales PWM (CH1 verde, CH2 azul, CH3 rojo, CH4 filtro)
@@ -615,12 +623,6 @@ void init_timer11Blink(void){
 
 /* Funciones ISR (solo registran el evento y regresan, sin lógica de la FSM) */
 
-//Cada milisegundo cuenta el tiempo (solo lo usa el antirrebote del botón)
-void SysTick_Handler(void)
-{
-    ticks++; //Un ms más
-}
-
 //Cada 250 ms (TIM11) deja la bandera del blinky
 void TIM1_TRG_COM_TIM11_IRQHandler(void)
 {
@@ -639,19 +641,35 @@ void TIM1_BRK_TIM9_IRQHandler(void)
     }
 }
 
-//Botón del encoder en PA0 (EXTI0 tiene su propio vector)
+//Botón del encoder en PA0 (EXTI0 tiene su propio vector): cada flanco, pulsar, soltar o rebote, reinicia el temporizador de antirrebote
 void EXTI0_IRQHandler(void)
 {
     if(EXTI->PR & EXTI_PR_PR0) {
         EXTI->PR = EXTI_PR_PR0; //Se baja escribiendo 1 (en EXTI->PR se limpia con 1, no con 0)
 
-        /* Una pulsación es válida si el pin está en bajo y pasaron BUTTON_DEBOUNCE_MS sin ningún flanco.
-         * last_button_tick se actualiza con CADA flanco (también con los rebotes al pulsar y al soltar),
-         * así un rebote al soltar no se cuenta como una pulsación nueva. */
-        if (((ticks - last_button_tick) >= BUTTON_DEBOUNCE_MS) && ((GPIOA->IDR & GPIO_IDR_ID0) == 0)) {
-            button_flag = 1; //La FSM lo convierte en EV_BUTTON
+        TIM10->CR1 &= ~TIM_CR1_CEN; //Detiene el conteo
+        TIM10->CNT = 0; //Reinicia la ventana de 30 ms
+        TIM10->SR &= ~TIM_SR_UIF; //Borra un vencimiento pendiente
+        TIM10->CR1 |= TIM_CR1_CEN; //Vuelve a contar
+    }
+}
+
+//TIM10 venció: pasaron 30 ms sin flancos en PA0, así que el nivel del pin ya es estable
+void TIM1_UP_TIM10_IRQHandler(void)
+{
+    if(TIM10->SR & TIM_SR_UIF) {
+        TIM10->SR &= ~TIM_SR_UIF; //Se baja la bandera
+        TIM10->CR1 &= ~TIM_CR1_CEN; //Se detiene hasta el próximo flanco
+
+        if ((GPIOA->IDR & GPIO_IDR_ID0) == 0) { //Pin en bajo y estable: botón pulsado
+            if (button_down == 0) { //Solo la primera vez por pulsación
+                button_down = 1;
+                button_flag = 1; //La FSM lo convierte en EV_BUTTON
+            }
         }
-        last_button_tick = ticks; //Reinicia la ventana de antirrebote con cada flanco
+        else { //Pin en alto y estable: botón soltado
+            button_down = 0;
+        }
     }
 }
 
