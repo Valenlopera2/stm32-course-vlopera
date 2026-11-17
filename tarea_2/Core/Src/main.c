@@ -52,24 +52,25 @@
  *   Modo            Qué se ve                          Qué hace el giro del encoder
  *   --------------  ---------------------------------  ------------------------------------
  *   MODE_OFF        los tres colores al 25 % (inicial)  nada
- *   MODE_RED        rojo                               sube o baja el rojo (parte de 0)
- *   MODE_GREEN      rojo que quedó + verde             sube o baja el verde (parte de 0)
- *   MODE_BLUE       rojo y verde que quedaron + azul   sube o baja el azul (parte de 0)
+ *   MODE_RED        rojo                               sube o baja el rojo (1ª vuelta parte de 0)
+ *   MODE_GREEN      rojo que quedó + verde             sube o baja el verde (1ª vuelta parte de 0)
+ *   MODE_BLUE       rojo y verde que quedaron + azul   sube o baja el azul (1ª vuelta parte de 0)
  *   MODE_ALL        los tres como quedaron             sube o baja los tres al tiempo
  *   MODE_DC         LEDs apagados, salida PB1          sube o baja el voltaje constante
  *
  * - Al arrancar o al dar reset, el sistema queda en MODE_OFF con los tres colores al 25 %
- *   (DUTY_IDLE). Desde la primera pulsación los modos empiezan en 0 como se describe abajo.
+ *   (DUTY_IDLE). Desde la primera pulsación cada modo parte de 0 la primera vez que se usa.
  *
  * - Los colores se acumulan: al pasar de un modo al siguiente el color anterior se queda
- *   con la intensidad que tenía y el color nuevo empieza en 0. Así el rojo sigue visible
+ *   con la intensidad que tenía y, la primera vez, el color nuevo empieza en 0. Así el rojo sigue visible
  *   aunque se baje el verde o el azul. En MODE_ALL el giro suma o resta a los tres colores
  *   (cada uno satura en 0 y en DUTY_MAX), y al llegar arriba el LED queda blanco.
  *
  * - En MODE_DC el PWM de PB1 pasa por el filtro RC (104 y 103) y el seguidor, y
  *   queda un voltaje casi plano: Vout = 3.3 V x duty. Fuera de ese modo la salida
- *   vale 0 V. Al entrar a MODE_DC parte de 0 V. Al pulsar de nuevo se vuelve a MODE_RED
- *   y los tres colores empiezan otra vez desde 0.
+ *   vale 0 V. La primera vez que se entra a MODE_DC parte de 0 V. Al pulsar de nuevo
+ *   se vuelve a MODE_RED y nada se reinicia: los colores y el voltaje DC conservan su valor
+ *   y al volver a cada modo siguen donde iban.
  *
  * - Giro del encoder: CLK y DT forman un código de cuadratura de 2 bits. Las ISR de EXTI4
  *   (CLK) y EXTI1 (DT) se disparan en cualquier flanco y llaman a encoder_Decode(), que
@@ -132,7 +133,7 @@
 #define DUTY_MAX 800 //CCR para 100 % de duty (ARR + 1)
 #define DUTY_STEP 50 //Cambio de duty por paso del encoder (50 de 800 = 6.25 %, llega al máximo en 16 pasos). Subirlo lo hace más rápido, bajarlo más fino
 #define DUTY_IDLE 200 //Duty de los tres colores en MODE_OFF, al arrancar o tras un reset (200 de 800 = 25 %)
-#define DUTY_INIT 0 //Duty con el que arranca cada modo al entrar a él (0 %)
+#define DUTY_INIT 0 //Duty con el que arranca cada modo al encender la placa (0 %)
 #define ENCODER_DIR_SIGN 1 //Poner -1 si al girar a la derecha el duty baja
 #define BUTTON_DEBOUNCE_MS 30 //Tiempo en ms que el botón debe estar sin cambios (sin flancos) antes de aceptar una pulsación nueva
 #define BLINK_PERIOD_MS 250 //Periodo del LED de estado en ms
@@ -200,7 +201,7 @@ int32_t duty_value[NUM_MODES]; //Duty (CCR) de cada modo, entre 0 y DUTY_MAX. Co
 Event_t get_next_event(void); //Lee (y limpia) las banderas de las ISR y la lectura del encoder, y las convierte en un evento
 int32_t encoder_TakeSteps(void); //Devuelve los pasos acumulados (con signo) y los descuenta de enc_steps
 void duty_ApplySteps(int32_t steps); //Suma steps x DUTY_STEP al duty del modo activo, con saturación
-void mode_Next(void); //Pasa al siguiente modo (el color nuevo parte de 0 y los anteriores se conservan) y actualiza las salidas
+void mode_Next(void); //Pasa al siguiente modo (cada modo conserva su duty, nada se reinicia) y actualiza las salidas
 void pwm_Update(void); //Escribe en los CCR el duty que le toca a cada salida según el modo
 void encoder_Decode(void); //Lee CLK y DT, decodifica la transición con enc_table y acumula los pasos en enc_steps (la llaman las ISR)
 void freq_Calculate(void); //Convierte los ciclos medidos con TIM2 en la frecuencia en Hz
@@ -387,23 +388,14 @@ void duty_ApplySteps(int32_t steps){
 
 //Pasa al siguiente modo. Después de MODE_DC vuelve a MODE_RED (MODE_OFF solo es el estado inicial)
 void mode_Next(void){
-    uint8_t i; //Índice del color
-
     mode = (Mode_t) (mode + 1);
 
     if (mode >= NUM_MODES) {
         mode = MODE_RED;
     }
 
-    if (mode == MODE_RED) { //Empieza una vuelta nueva: los tres colores parten de 0
-        for (i = MODE_RED; i <= MODE_BLUE; i++) {
-            duty_value[i] = DUTY_INIT;
-        }
-    }
-    else if ((mode == MODE_GREEN) || (mode == MODE_BLUE) || (mode == MODE_DC)) { //El color nuevo (o el voltaje) parte de 0
-        duty_value[mode] = DUTY_INIT; //Los colores anteriores NO se tocan: conservan su intensidad
-    }
-    //En MODE_ALL no se reinicia nada: los tres colores siguen como estaban
+    //No se reinicia nada: cada modo conserva su duty (los tres colores y el voltaje DC) y al volver
+    //a un modo sigue donde iba. Solo en el arranque todos parten de 0 (ver main)
 
     pwm_Update(); //Cambia qué salidas quedan encendidas
 }
