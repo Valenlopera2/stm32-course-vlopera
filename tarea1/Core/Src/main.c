@@ -45,14 +45,14 @@
  * el estado es IDLE y el main no hace nada.
  * - SysTick (1 ms): lleva el tiempo (ticks), se usa para el antirrebote de
  *   50 ms de los sensores y pide el parpadeo del LED de estado (BLINK_LED).
- * - TIM2 (2 ms): timer independiente que gobierna el refresco del display y
+ * - TIM10 (2 ms, timer de 16 bits en APB2): timer independiente que gobierna el refresco del display y
  *   pide REFRESH_DISPLAY. En cada turno se apagan los 4 dígitos (evita el
  *   fantasma), se dibujan los segmentos del dígito siguiente y se enciende
  *   solo ese dígito. Con 4 dígitos cada uno se refresca cada 8 ms (125 Hz) y el
  *   ojo los ve todos encendidos.
  * - EXTI3 y EXTI0: piden COUNT_UP y COUNT_DOWN, y action_fsm actualiza el
  *   contador y separa sus dígitos.
- * Interrupciones usadas: SysTick, TIM2, EXTI0 y EXTI3.
+ * Interrupciones usadas: SysTick, TIM10, EXTI0 y EXTI3.
  ******************************************************************************
  */
 
@@ -61,11 +61,11 @@
 #include "stm32f4xx.h"
 
 
-// Definiendo constantes de configuración.
+// Definiendo constantes de configuración
 #define SYSTICK_RELOAD     (16000U - 1U) // Recarga para 1 ms con frecuencia de 16 MHz
 #define REFRESH_PERIOD_MS  2U            // Periodo de refresco del display en ms
-#define TIM2_PRESCALER     (16000U - 1U) // Divisor por 16000, para que el reloj del TIM2 sea de 1 kHz
-#define TIM2_RELOAD        (REFRESH_PERIOD_MS - 1U) // Recarga del TIM2 para el periodo de refresco
+#define TIM10_PRESCALER    (16000U - 1U) // Divisor por 16000, para que el reloj del TIM10 sea de 1 kHz
+#define TIM10_RELOAD       (REFRESH_PERIOD_MS - 1U) // Recarga del TIM10 para el periodo de refresco
 #define DEBOUNCE_MS        50U           // Tiempo de antirrebote de los sensores en ms
 #define BLINK_PERIOD_MS    250U         // Periodo del parpadeo del LED de estado en ms
 
@@ -140,7 +140,7 @@ int main(void)
 {
     // Configuración
     init_gpio(); // Configura los pines
-    init_timers(); // Configura el SysTick y el TIM2
+    init_timers(); // Configura el SysTick y el TIM10
     init_exti(); // Configura las interrupciones externas
 
     // Ciclo principal
@@ -335,30 +335,30 @@ void init_timers(void)
     // Prioridad del SysTick
     NVIC_SetPriority(SysTick_IRQn, 0); // Prioridad más alta que las EXTI para no perder eventos
 
-    // Habilitando el reloj del TIM2
-    RCC->APB1ENR &= ~(RCC_APB1ENR_TIM2EN_Msk); // Limpiando el bit de reloj
-    RCC->APB1ENR |= (0b1 << RCC_APB1ENR_TIM2EN_Pos); // Activando el reloj del TIM2
-    (void)RCC->APB1ENR; // Lectura de espera para estabilizar el reloj
+    // Habilitando el reloj del TIM10
+    RCC->APB2ENR &= ~(RCC_APB2ENR_TIM10EN_Msk); // Limpiando el bit de reloj
+    RCC->APB2ENR |= (0b1 << RCC_APB2ENR_TIM10EN_Pos); // Activando el reloj del TIM10
+    (void)RCC->APB2ENR; // Lectura de espera para estabilizar el reloj
 
-    // Configurando el TIM2 para refrescar el display cada 2 ms
-    TIM2->CR1 &= ~(TIM_CR1_CEN_Msk); // Deteniendo el contador antes de configurar
-    TIM2->PSC &= ~(TIM_PSC_PSC_Msk); // Limpiando el divisor
-    TIM2->PSC |= (TIM2_PRESCALER << TIM_PSC_PSC_Pos); // Divisor por 16000 (reloj del timer de 1 kHz)
-    TIM2->ARR &= ~(TIM_ARR_ARR_Msk); // Limpiando el valor de recarga
-    TIM2->ARR |= (TIM2_RELOAD << TIM_ARR_ARR_Pos); // Recarga para 2 ms
-    TIM2->EGR &= ~(TIM_EGR_UG_Msk); // Limpiando el bit de actualización
-    TIM2->EGR |= (0b1 << TIM_EGR_UG_Pos); // Forzando un update event para cargar el divisor y la recarga
-    TIM2->SR &= ~(TIM_SR_UIF_Msk); // Limpiando la bandera de interrupción del update event
+    // Configurando el TIM10 para refrescar el display cada 2 ms
+    TIM10->CR1 &= ~(TIM_CR1_CEN_Msk); // Deteniendo el contador antes de configurar
+    TIM10->PSC &= ~(TIM_PSC_PSC_Msk); // Limpiando el divisor
+    TIM10->PSC |= (TIM10_PRESCALER << TIM_PSC_PSC_Pos); // Divisor por 16000 (reloj del timer de 1 kHz)
+    TIM10->ARR &= ~(TIM_ARR_ARR_Msk); // Limpiando el valor de recarga
+    TIM10->ARR |= (TIM10_RELOAD << TIM_ARR_ARR_Pos); // Recarga para 2 ms
+    TIM10->EGR &= ~(TIM_EGR_UG_Msk); // Limpiando el bit de actualización
+    TIM10->EGR |= (0b1 << TIM_EGR_UG_Pos); // Forzando un update event para cargar el divisor y la recarga
+    TIM10->SR &= ~(TIM_SR_UIF_Msk); // Limpiando la bandera de interrupción del update event
 
-    // Habilitando la interrupción del TIM2
-    TIM2->DIER &= ~(TIM_DIER_UIE_Msk); // Limpiando la habilitación de interrupción por update event
-    TIM2->DIER |= (0b1 << TIM_DIER_UIE_Pos); // Habilitando la interrupción por update event
-    NVIC_SetPriority(TIM2_IRQn, 1); // Prioridad del TIM2
-    NVIC_EnableIRQ(TIM2_IRQn); // Habilitando el TIM2 en el NVIC
+    // Habilitando la interrupción del TIM10
+    TIM10->DIER &= ~(TIM_DIER_UIE_Msk); // Limpiando la habilitación de interrupción por update event
+    TIM10->DIER |= (0b1 << TIM_DIER_UIE_Pos); // Habilitando la interrupción por update event
+    NVIC_SetPriority(TIM1_UP_TIM10_IRQn, 1); // Prioridad del TIM10
+    NVIC_EnableIRQ(TIM1_UP_TIM10_IRQn); // Habilitando el TIM10 en el NVIC
 
-    // Encendiendo el TIM2
-    TIM2->CR1 &= ~(TIM_CR1_CEN_Msk); // Limpiando el bit de encendido
-    TIM2->CR1 |= (0b1 << TIM_CR1_CEN_Pos); // Habilitando el contador del TIM2
+    // Encendiendo el TIM10
+    TIM10->CR1 &= ~(TIM_CR1_CEN_Msk); // Limpiando el bit de encendido
+    TIM10->CR1 |= (0b1 << TIM_CR1_CEN_Pos); // Habilitando el contador del TIM10
 }
 
 void init_exti(void)
@@ -485,10 +485,10 @@ void SysTick_Handler(void)
     }
 }
 
-void TIM2_IRQHandler(void)
+void TIM1_UP_TIM10_IRQHandler(void)
 {
-    if(TIM2->SR & (0b1 << TIM_SR_UIF_Pos)){ // Verificamos si la interrupción fue por un update event
-        TIM2->SR &= ~(0b1 << TIM_SR_UIF_Pos); // Limpiamos la bandera de interrupción
+    if(TIM10->SR & (0b1 << TIM_SR_UIF_Pos)){ // Verificamos si la interrupción fue por un update event
+        TIM10->SR &= ~(0b1 << TIM_SR_UIF_Pos); // Limpiamos la bandera de interrupción
 
         // Programando el refresco del display cada 2 ms
         if(fsm_Next_state == IDLE){ // Solo si no hay otro evento pendiente
