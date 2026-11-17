@@ -16,89 +16,50 @@
  ******************************************************************************
  * Tarea 2- Taller 5- Valentina Lopera Urrego 
  * DESCRIPCIÓN DEL PROYECTO
- * Un encoder rotatorio y su botón controlan la intensidad de un LED RGB y una salida de voltaje
- * constante, todo con PWM. Organizado como una Máquina de Estados Finitos (FSM)
+ * Un encoder rotatorio y su botón controlan, con PWM, la intensidad de un LED RGB y una salida
+ * de voltaje DC. Organizado como una Máquina de Estados Finitos (FSM).
  *
- * ========================== HARDWARE ========================== *
+ * ============================ HARDWARE ============================ *
+ * NUCLEO-F411RE, encoder KY-040, LED RGB de cátodo común (una resistencia por color),
+ * filtro RC (10k + 104 y 10k + 103) y op-amp MCP6002 como seguidor de voltaje.
  *
- * Componentes: NUCLEO-F411RE, encoder KY-040, LED RGB de cátodo común con una resistencia
- * por color, filtro RC (10k + 104 y 10k + 103) y op-amp MCP6002 como seguidor de voltaje.
+ *  Pin        Función
+ *  ---------  -------------------------------------------------------------
+ *  PA6        PWM verde  (TIM3_CH1, AF02)
+ *  PA7        PWM azul   (TIM3_CH2, AF02)
+ *  PC8        PWM rojo   (TIM3_CH3, AF02)
+ *  PB1        PWM al filtro RC -> seguidor MCP6002 (TIM3_CH4, AF02)
+ *  PB10       Captura (TIM2_CH3, AF01), con un cable desde PC8, mide la frecuencia del PWM
+ *  PA4 / PA1  Encoder CLK / DT (entradas, las lee TIM9)
+ *  PA0        Botón del encoder (EXTI0): cambia el modo
+ *  PH1        LED de estado (TIM11, cambia cada 250 ms)
  *
- *** Mapeo de Pines:
- ** LED RGB (PWM a 20 kHz, una resistencia por color, ver LED_COMMON_ANODE):
- * - Rojo  -> PC8  (TIM3_CH3, AF02)
- * - Verde -> PB8  (TIM4_CH3, AF02)
- * - Azul  -> PB9  (TIM4_CH4, AF02)
+ * ============================ SOFTWARE ============================ *
+ * El botón pasa al siguiente modo y el giro del encoder cambia la intensidad (derecha sube).
  *
- ** SALIDA AL FILTRO (PWM a 20 kHz -> RC -> seguidor con op-amp MCP6002):
- * - PB1 (TIM3_CH4, AF02)
+ *  Modo       Qué se ve                          Qué controla el giro
+ *  ---------  ---------------------------------  -------------------------
+ *  MODE_OFF   tres colores al 25 % (inicio)      nada
+ *  MODE_RED   rojo                               el rojo
+ *  MODE_GREEN rojo + verde                       el verde
+ *  MODE_BLUE  rojo + verde + azul                el azul
+ *  MODE_ALL   los tres como iban                 los tres a la vez
+ *  MODE_DC    LEDs como iban, salida PB1         el voltaje DC (Vout = 3.3 V x duty)
  *
- ** LECTURA DE FRECUENCIA (EXTI9, flanco de subida):
- * - PC9 -> cable desde PC8, para medir el periodo del PWM rojo
- *
- ** ENCODER (KY-040, enchufado directo al header):
- * - CLK -> PA4 (EXTI4, ambos flancos)
- * - DT  -> PA1 (EXTI1, ambos flancos)
- * - SW  -> PA0 (EXTI0, ambos flancos): el botón cambia el modo
- *
- ** LED DE ESTADO -> PH1 (cambia cada 250 ms con el SysTick, siempre)
- *
- *
- * ========================== SOFTWARE ========================== *
- *
- * - El botón del encoder cambia de modo. Cada pulsación pasa al siguiente y
- *   después del 5 vuelve al 1. Antes de la primera pulsación los tres colores están al 25 %.
- *
- *   Modo            Qué se ve                          Qué hace el giro del encoder
- *   --------------  ---------------------------------  ------------------------------------
- *   MODE_OFF        los tres colores al 25 % (inicial)  nada
- *   MODE_RED        rojo                               sube o baja el rojo (1ª vuelta parte de 0)
- *   MODE_GREEN      rojo que quedó + verde             sube o baja el verde (1ª vuelta parte de 0)
- *   MODE_BLUE       rojo y verde que quedaron + azul   sube o baja el azul (1ª vuelta parte de 0)
- *   MODE_ALL        los tres como quedaron             sube o baja los tres al tiempo
- *   MODE_DC         LEDs apagados, salida PB1          sube o baja el voltaje constante
- *
- * - Al arrancar o al dar reset, el sistema queda en MODE_OFF con los tres colores al 25 %
- *   (DUTY_IDLE). Desde la primera pulsación cada modo parte de 0 la primera vez que se usa.
- *
- * - Los colores se acumulan: al pasar de un modo al siguiente el color anterior se queda
- *   con la intensidad que tenía y, la primera vez, el color nuevo empieza en 0. Así el rojo sigue visible
- *   aunque se baje el verde o el azul. En MODE_ALL el giro suma o resta a los tres colores
- *   (cada uno satura en 0 y en DUTY_MAX), y al llegar arriba el LED queda blanco.
- *
- * - En MODE_DC el PWM de PB1 pasa por el filtro RC (104 y 103) y el seguidor, y
- *   queda un voltaje casi plano: Vout = 3.3 V x duty. Fuera de ese modo la salida
- *   vale 0 V. La primera vez que se entra a MODE_DC parte de 0 V. Al pulsar de nuevo
- *   se vuelve a MODE_RED y nada se reinicia: los colores y el voltaje DC conservan su valor
- *   y al volver a cada modo siguen donde iban.
- *
- * - Giro del encoder: CLK y DT forman un código de cuadratura de 2 bits. Las ISR de EXTI4
- *   (CLK) y EXTI1 (DT) se disparan en cualquier flanco y llaman a encoder_Decode(), que
- *   compara el estado anterior con el nuevo en una tabla (enc_table): cada transición
- *   válida suma +1 o -1 a un acumulador y las inválidas (rebotes) suman 0. Cuando el
- *   acumulador llega a +4 o -4 (una muesca completa) se suma o resta un paso a enc_steps.
- *   Cada paso suma o resta DUTY_STEP al duty del modo activo, saturado entre 0 y DUTY_MAX.
- *
- * - TIM3 y TIM4 (16 bits) generan los PWM. Con PSC = 0 el reloj es de 16 MHz y con
- *   ARR = 799 el periodo es de 800 cuentas: 16 MHz / 800 = 20 kHz, con 800 niveles
- *   de duty (CCR = 0 es 0 % y CCR = 800 es 100 %). A 20 kHz no se ve parpadeo en
- *   los LEDs y el filtro deja un voltaje casi plano.
- *
- * - TIM2 (32 bits) corre libre a 16 MHz y sirve de cronómetro. En cada flanco de
- *   subida de PC9 (el PWM rojo) la ISR guarda su valor. Con FREQ_EDGES + 1 flancos
- *   hay FREQ_EDGES periodos completos y el promedio da la frecuencia en Hz
- *   (measured_freq_hz, se ve en el depurador). Debe dar unos 20000 Hz.
- *
- * - SysTick interrumpe cada 1 ms: lleva el tiempo (ticks) para el antirrebote del
- *   botón y del giro, y pide el cambio del LED PH1 cada 250 ms.
- *
- * - Reloj del sistema: HSI 16 MHz (sin PLL), los timers reciben 16 MHz.
+ * - Después de MODE_DC vuelve a MODE_RED. Nada se reinicia: cada color y el voltaje DC
+ *   conservan su valor (solo parten de 0 al arrancar).
+ * - PWM: TIM3 genera los 4 canales a 20 kHz (16 MHz / 800) con 800 niveles de duty.
+ * - Encoder: TIM9 lee CLK y DT cada 500 us y una tabla de transiciones (enc_table) cuenta
+ *   una muesca cada 4 transiciones válidas; cada paso suma o resta DUTY_STEP.
+ * - Frecuencia: TIM2 (32 bits) captura cada flanco de subida de PB10 y promedia FREQ_EDGES
+ *   periodos en measured_freq_hz (Live Watch, debe dar unos 20000 Hz).
+ * - SysTick (1 ms) lleva el tiempo del antirrebote del botón. Reloj: HSI 16 MHz.
  *
  *
  * ===================== FSM ===================== *
  *
- * Patrón Switch-Case. La FSM decide QUÉ pasa (política), las funciones driver hacen
- * el CÓMO (hardware). Las ISR solo levantan banderas volatile, get_next_event() las
+ * Patrón Switch-Case. La FSM decide QUÉ pasa, las funciones driver hacen
+ * el CÓMO. Las ISR solo levantan banderas volatile, get_next_event() las
  * convierte en un EVENTO y el while(1) nunca se bloquea.
  *
  * STATE_IDLE es el centro: es el único estado que lee eventos. Cada evento lo lleva
@@ -136,18 +97,19 @@
 #define DUTY_INIT 0 //Duty con el que arranca cada modo al encender la placa (0 %)
 #define ENCODER_DIR_SIGN 1 //Poner -1 si al girar a la derecha el duty baja
 #define BUTTON_DEBOUNCE_MS 30 //Tiempo en ms que el botón debe estar sin cambios (sin flancos) antes de aceptar una pulsación nueva
-#define BLINK_PERIOD_MS 250 //Periodo del LED de estado en ms
-#define FREQ_EDGES 100 //Periodos del PWM rojo que se promedian en cada lectura
+#define BLINK_PERIOD_MS 250 //Periodo del LED de estado en ms (lo cuenta TIM11)
+#define ENCODER_SAMPLE_ARR 499 //TIM9 a 1 MHz: (499 + 1) us = 500 us, el encoder se muestrea a 2 kHz
+#define FREQ_EDGES 100 //Periodos del PWM rojo (PC8) que se promedian en cada lectura
 #define FREQ_TIMEOUT_CYCLES 16000 //Si pasa más de 1 ms (16000 ciclos) sin flancos, la ventana se reinicia
 #define TIMER_CLOCK_HZ 16000000 //Frecuencia del reloj de los timers
 
-//Estados de la FSM (el QUÉ)
+//Estados de la FSM 
 typedef enum {
 	STATE_IDLE, //Reposo: espera un evento sin hacer nada más (no bloquea)
 	STATE_CHANGE_MODE, //Atiende el botón: pasa al siguiente modo
 	STATE_UPDATE_DUTY, //Atiende el giro del encoder: suma o resta al duty del modo activo
-	STATE_BLINK, //Atiende el tick del SysTick: cambia el estado del LED PH1
-	STATE_MEASURE_FREQ, //Atiende la lectura del cronómetro: calcula la frecuencia del PWM rojo
+	STATE_BLINK, //Atiende el tick del TIM11: cambia el estado del LED PH1
+	STATE_MEASURE_FREQ, //Atiende la lectura del cronómetro: calcula la frecuencia del PWM rojo (PC8)
 	STATE_ERROR, //Estado inválido (trampa de hardware): se recupera hacia STATE_IDLE
 	NUM_STATES //Centinela: cantidad de estados, sirve para validar el rango
 } State_t;
@@ -163,13 +125,13 @@ typedef enum {
 	NUM_MODES //Centinela: cantidad de modos, sirve para dar la vuelta
 } Mode_t;
 
-//Eventos de la FSM (Según que cambian los estados)
+//Eventos de la FSM
 typedef enum {
 	EV_NONE, //No ha ocurrido nada
 	EV_BUTTON, //Se pulsó el botón del encoder (PA0, flanco de bajada)
 	EV_ENCODER_CHANGED, //El encoder avanzó o retrocedió al menos un paso (enc_steps distinto de 0)
-	EV_BLINK_TICK, //Venció el periodo del blinky (250 ms)
-	EV_FREQ_READY //El cronómetro midió FREQ_EDGES periodos del PWM rojo
+	EV_BLINK_TICK, //Venció el periodo del blinky (250 ms, TIM11)
+	EV_FREQ_READY //El cronómetro midió FREQ_EDGES periodos del PWM rojo (PC8)
 } Event_t;
 
 //Variables
@@ -178,20 +140,21 @@ Mode_t mode = MODE_OFF; //Modo actual: una sola variable, por eso los modos son 
 uint8_t state_entry_flag = 1; //Vale 1 al llegar a un estado para que su acción [ENTER] corra exactamente una vez
 
 volatile uint8_t button_flag = 0; //Bandera que deja la ISR de PA0 (volatile: cambia fuera del flujo normal)
-volatile uint8_t blink_flag = 0; //Bandera que deja la ISR del SysTick
-volatile uint8_t freq_flag = 0; //Bandera que deja la ISR de PC9
+volatile uint8_t blink_flag = 0; //Bandera que deja la ISR del TIM11
+volatile uint8_t freq_flag = 0; //Bandera que deja la ISR del TIM2 (captura)
 
 volatile uint32_t ticks = 0; //Milisegundos desde el arranque (los cuenta el SysTick)
 volatile uint32_t last_button_tick = 0; //Instante del último flanco del botón (válido o rebote), para el antirrebote
-volatile int32_t enc_steps = 0; //Pasos del encoder pendientes (+ giro a la derecha, - a la izquierda), los suman las ISR de PA4 y PA1
-volatile uint8_t enc_prev = 3; //Estado anterior del encoder: bit 1 = CLK, bit 0 = DT (en reposo los dos están en alto: 3)
+volatile int32_t enc_steps = 0; //Pasos del encoder pendientes (+ giro a la derecha, - a la izquierda), los suma la ISR del TIM9
+volatile uint8_t enc_sample = 3; //Última lectura de los pines (para exigir dos lecturas iguales seguidas)
+volatile uint8_t enc_prev = 3; //Último estado válido del encoder: bit 1 = CLK, bit 0 = DT (en reposo los dos están en alto: 3)
 volatile int8_t enc_accum = 0; //Transiciones válidas acumuladas de la muesca actual (4 = una muesca hacia la derecha)
 const int8_t enc_table[16] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0}; //Cambio por transición, indexada con (estado anterior << 2) | estado nuevo. Las transiciones imposibles (rebotes) valen 0
-volatile uint32_t freq_first = 0; //Valor de TIM2 en el primer flanco de la ventana
-volatile uint32_t freq_last = 0; //Valor de TIM2 en el último flanco
+volatile uint32_t freq_first = 0; //Captura de TIM2 en el primer flanco de la ventana
+volatile uint32_t freq_last = 0; //Captura de TIM2 en el último flanco
 volatile uint32_t freq_cycles = 0; //Ciclos de reloj que duraron FREQ_EDGES periodos
 volatile uint16_t freq_edges = 0; //Flancos contados en la ventana actual
-uint32_t measured_freq_hz = 0; //Frecuencia medida del PWM rojo en Hz (se ve en el depurador)
+uint32_t measured_freq_hz = 0; //Frecuencia medida del PWM rojo (PC8) en Hz (se ve en el depurador)
 
 int32_t duty_value[NUM_MODES]; //Duty (CCR) de cada modo, entre 0 y DUTY_MAX. Con signo para comparar con los límites
 
@@ -203,7 +166,7 @@ int32_t encoder_TakeSteps(void); //Devuelve los pasos acumulados (con signo) y l
 void duty_ApplySteps(int32_t steps); //Suma steps x DUTY_STEP al duty del modo activo, con saturación
 void mode_Next(void); //Pasa al siguiente modo (cada modo conserva su duty, nada se reinicia) y actualiza las salidas
 void pwm_Update(void); //Escribe en los CCR el duty que le toca a cada salida según el modo
-void encoder_Decode(void); //Lee CLK y DT, decodifica la transición con enc_table y acumula los pasos en enc_steps (la llaman las ISR)
+void encoder_Decode(void); //Lee CLK y DT, decodifica la transición con enc_table y acumula los pasos en enc_steps (la llama la ISR del TIM9)
 void freq_Calculate(void); //Convierte los ciclos medidos con TIM2 en la frecuencia en Hz
 void led_Toggle(void); //Cambia el estado del LED PH1
 
@@ -211,9 +174,10 @@ void led_Toggle(void); //Cambia el estado del LED PH1
 void init_GPIO(void);
 void init_EXTI(void);
 void init_systick(void);
-void init_timer3PWM(void);
-void init_timer4PWM(void);
-void init_timer2(void);
+void init_timer3PWM(void); //TIM3: los 4 canales PWM
+void init_timer2Capture(void); //TIM2: captura de la señal del PWM rojo (PC8)
+void init_timer9Encoder(void); //TIM9: muestrea el encoder a 2 kHz
+void init_timer11Blink(void); //TIM11: marca el periodo del blinky
 
 //Main
 
@@ -228,10 +192,11 @@ int main(void){
     init_GPIO();
     init_EXTI();
     init_timer3PWM();
-    init_timer4PWM();
-    init_timer2();
+    init_timer2Capture();
+    init_timer9Encoder();
+    init_timer11Blink();
     pwm_Update(); //Estado inicial: los tres colores al 25 % (MODE_OFF)
-    init_systick(); //Último: las interrupciones del blinky empiezan con todo el hardware listo
+    init_systick(); //Último: el conteo de ms empieza con todo el hardware listo
 
     /* El ciclo infinito nunca termina: lee un evento, evalúa el estado y reacciona.
      * Regla de NO bloqueo: no hay delay(), cada pasada procesa a lo sumo UN evento y UNA transición. */
@@ -333,16 +298,16 @@ Event_t get_next_event(void){
         return EV_BUTTON;
     }
 
-    if (enc_steps != 0) { //Las ISR de PA4 y PA1 dejaron al menos un paso pendiente, a la derecha o a la izquierda
+    if (enc_steps != 0) { //La ISR del TIM9 dejó al menos un paso pendiente, a la derecha o a la izquierda
         return EV_ENCODER_CHANGED;
     }
 
-    if (blink_flag == 1) { //La ISR del SysTick dejó un evento pendiente
+    if (blink_flag == 1) { //La ISR del TIM11 dejó un evento pendiente
         blink_flag = 0;
         return EV_BLINK_TICK;
     }
 
-    if (freq_flag == 1) { //La ISR de PC9 dejó una lectura lista
+    if (freq_flag == 1) { //La ISR del TIM2 dejó una lectura lista
         freq_flag = 0;
         return EV_FREQ_READY;
     }
@@ -354,7 +319,7 @@ Event_t get_next_event(void){
 int32_t encoder_TakeSteps(void){
     int32_t steps; //Copia de los pasos pendientes
 
-    __disable_irq(); //Las ISR del encoder podrían sumar un paso entre leer y reiniciar
+    __disable_irq(); //La ISR del encoder podría sumar un paso entre leer y reiniciar
     steps = enc_steps;
     enc_steps = 0; //Se reinicia el acumulador
     __enable_irq();
@@ -400,7 +365,7 @@ void mode_Next(void){
     pwm_Update(); //Cambia qué salidas quedan encendidas
 }
 
-//Escribe el duty de cada salida según el modo. Los colores se acumulan; en MODE_DC los LEDs se apagan y solo funciona PB1
+//Escribe el duty de cada salida según el modo. Los colores se acumulan y se quedan encendidos también en MODE_DC, donde además funciona PB1
 void pwm_Update(void){
     int32_t red = 0; //Duty del rojo
     int32_t green = 0; //Duty del verde
@@ -412,18 +377,18 @@ void pwm_Update(void){
         green = DUTY_IDLE;
         blue = DUTY_IDLE;
     }
-    else if (mode == MODE_DC) {
-        filter = duty_value[MODE_DC]; //Solo la salida al filtro
-    }
-    else { //Modos de color: cada color muestra el duty que tiene guardado
+    else { //Modos de color y MODE_DC: cada color muestra el duty que tiene guardado
         red = duty_value[MODE_RED];
         green = duty_value[MODE_GREEN];
         blue = duty_value[MODE_BLUE];
+        if (mode == MODE_DC) {
+            filter = duty_value[MODE_DC]; //Además, en MODE_DC la salida al filtro lleva su duty (los LEDs siguen como estaban)
+        }
     }
 
+    TIM3->CCR1 = green; //Verde, PA6
+    TIM3->CCR2 = blue; //Azul, PA7
     TIM3->CCR3 = red; //Rojo, PC8
-    TIM4->CCR3 = green; //Verde, PB8
-    TIM4->CCR4 = blue; //Azul, PB9
     TIM3->CCR4 = filter; //Filtro, PB1
 }
 
@@ -433,6 +398,14 @@ void encoder_Decode(void){
 
     if (GPIOA->IDR & GPIO_IDR_ID4) state |= 2; //CLK (PA4)
     if (GPIOA->IDR & GPIO_IDR_ID1) state |= 1; //DT (PA1)
+
+    if (state != enc_sample) { //Cambió desde la lectura anterior: puede ser rebote, se espera una lectura más
+        enc_sample = state;
+        return;
+    }
+    if (state == enc_prev) { //Estable y sin cambios respecto al último estado válido: nada que hacer
+        return;
+    }
 
     enc_accum += enc_table[(enc_prev << 2) | state]; //Suma +1, -1 o 0 según la transición
     enc_prev = state; //El estado nuevo pasa a ser el anterior
@@ -454,7 +427,7 @@ void encoder_Decode(void){
 void freq_Calculate(void){
     uint32_t cycles; //Copia de los ciclos medidos
 
-    __disable_irq(); //La ISR de PC9 podría cambiar freq_cycles a la mitad de la lectura
+    __disable_irq(); //La ISR del TIM2 podría cambiar freq_cycles a la mitad de la lectura
     cycles = freq_cycles;
     __enable_irq();
 
@@ -484,8 +457,14 @@ void init_GPIO(void){
     GPIOH->ODR &= ~GPIO_ODR_OD1; //Inicia apagado
 
     /*
-    PWM del LED rojo (PC8 AF02 (TIM3 -> CH3)) y del filtro (PB1 AF02 (TIM3 -> CH4))
+    PWM de TIM3: verde (PA6 AF02 -> CH1), azul (PA7 AF02 -> CH2), rojo (PC8 AF02 -> CH3) y filtro (PB1 AF02 -> CH4)
     */
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN; //Señal de reloj puerto A
+    GPIOA->MODER &= ~(GPIO_MODER_MODE6 | GPIO_MODER_MODE7); //Limpiamos (00)
+    GPIOA->MODER |= (GPIO_MODER_MODE6_1 | GPIO_MODER_MODE7_1); //(10) Función alternativa
+    GPIOA->AFR[0] &= ~(GPIO_AFRL_AFRL6 | GPIO_AFRL_AFRL7); //Limpiamos (PA6 y PA7 están en el registro bajo)
+    GPIOA->AFR[0] |= (GPIO_AFRL_AFRL6_1 | GPIO_AFRL_AFRL7_1); //(0010 AF02 en ambos casos)
+
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN; //Señal de reloj puerto C
     GPIOC->MODER &= ~GPIO_MODER_MODE8; //Limpiamos (00)
     GPIOC->MODER |= GPIO_MODER_MODE8_1; //(10) Función alternativa
@@ -499,35 +478,31 @@ void init_GPIO(void){
     GPIOB->AFR[0] |= GPIO_AFRL_AFRL1_1; //(0010 AF02)
 
     /*
-    PWM del LED verde (PB8 AF02 (TIM4 -> CH3)) y azul (PB9 AF02 (TIM4 -> CH4))
+    Captura de TIM2 (PB10 AF01 -> CH3): recibe el PWM rojo (PC8) con un cable
     */
-    GPIOB->MODER &= ~(GPIO_MODER_MODE8 | GPIO_MODER_MODE9); //Limpiamos (00)
-    GPIOB->MODER |= (GPIO_MODER_MODE8_1 | GPIO_MODER_MODE9_1); //(10) Función alternativa
-    GPIOB->AFR[1] &= ~(GPIO_AFRH_AFRH0 | GPIO_AFRH_AFRH1); //Limpiamos (PB8 y PB9 están en el registro alto)
-    GPIOB->AFR[1] |= (GPIO_AFRH_AFRH0_1 | GPIO_AFRH_AFRH1_1); //(0010 AF02 en ambos casos)
+    GPIOB->MODER &= ~GPIO_MODER_MODE10; //Limpiamos (00)
+    GPIOB->MODER |= GPIO_MODER_MODE10_1; //(10) Función alternativa
+    GPIOB->AFR[1] &= ~GPIO_AFRH_AFRH2; //Limpiamos (PB10 está en el registro alto, posición 2)
+    GPIOB->AFR[1] |= GPIO_AFRH_AFRH2_0; //(0001 AF01)
+    GPIOB->PUPDR &= ~GPIO_PUPDR_PUPD10; //Limpiamos
+    GPIOB->PUPDR |= GPIO_PUPDR_PUPD10_1; //Pull-down: evita que flote si falta el cable
 
     /*
-    EXTIs (Entradas)
+    EXTI (Entradas)
     */
 
-    //PC9 (Lectura de frecuencia: recibe el PWM rojo con un cable desde PC8)
-    GPIOC->MODER &= ~GPIO_MODER_MODE9; //Limpiamos (00) modo entrada
-    GPIOC->PUPDR &= ~GPIO_PUPDR_PUPD9; //Limpiamos
-    GPIOC->PUPDR |= GPIO_PUPDR_PUPD9_1; //Pull-down: evita que flote si falta el cable
-
     //PA0 (Botón del encoder, SW)
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN; //Señal de reloj puerto A
     GPIOA->MODER &= ~GPIO_MODER_MODE0; //Limpiamos (00) modo entrada
     GPIOA->PUPDR &= ~GPIO_PUPDR_PUPD0; //Limpiamos
     GPIOA->PUPDR |= GPIO_PUPDR_PUPD0_0; //Pull-up: el botón lleva el pin a GND al pulsarlo
 
-    //PA4 (Giro del encoder, CLK; interrumpe en ambos flancos)
+    //PA4 (Giro del encoder, CLK; entrada que lee TIM9)
     GPIOA->MODER &= ~GPIO_MODER_MODE4; //Limpiamos (00) modo entrada
     GPIOA->PUPDR &= ~GPIO_PUPDR_PUPD4; //Limpiamos
     GPIOA->PUPDR |= GPIO_PUPDR_PUPD4_0; //Pull-up (el módulo también trae uno)
 
     /*
-    Encoder (DT -> PA1, entrada con interrupción en ambos flancos)
+    Encoder (DT -> PA1, entrada que lee TIM9)
     */
     GPIOA->MODER &= ~GPIO_MODER_MODE1; //Limpiamos (00) modo entrada
     GPIOA->PUPDR &= ~GPIO_PUPDR_PUPD1; //Limpiamos
@@ -548,42 +523,6 @@ void init_EXTI(void){
     NVIC_SetPriority(EXTI0_IRQn, 1); //Prioridad del botón
     __NVIC_EnableIRQ(EXTI0_IRQn); //Habilita la interrupción en el NVIC
 
-    /*
-    PA4 (Giro del encoder, CLK)
-    */
-    SYSCFG->EXTICR[1] &= ~SYSCFG_EXTICR2_EXTI4; //Limpiamos
-    SYSCFG->EXTICR[1] |= SYSCFG_EXTICR2_EXTI4_PA; //La línea EXTI4 toma el pin 4 del puerto A
-    EXTI->RTSR |= EXTI_RTSR_TR4; //Disparo por flanco de subida
-    EXTI->FTSR |= EXTI_FTSR_TR4; //y por flanco de bajada: el decodificador necesita los dos
-    EXTI->IMR |= EXTI_IMR_MR4; //Desenmascara la línea 4
-    NVIC_SetPriority(EXTI4_IRQn, 1); //Prioridad del giro
-    __NVIC_EnableIRQ(EXTI4_IRQn); //Habilita la interrupción en el NVIC
-
-    /*
-    PA1 (Giro del encoder, DT)
-    */
-    SYSCFG->EXTICR[0] &= ~SYSCFG_EXTICR1_EXTI1; //Limpiamos
-    SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI1_PA; //La línea EXTI1 toma el pin 1 del puerto A
-    EXTI->RTSR |= EXTI_RTSR_TR1; //Disparo por flanco de subida
-    EXTI->FTSR |= EXTI_FTSR_TR1; //y por flanco de bajada
-    EXTI->IMR |= EXTI_IMR_MR1; //Desenmascara la línea 1
-    NVIC_SetPriority(EXTI1_IRQn, 1); //Prioridad del giro
-    __NVIC_EnableIRQ(EXTI1_IRQn); //Habilita la interrupción en el NVIC
-
-    //Estado inicial del encoder: se lee antes de que el primer giro dispare una interrupción
-    enc_prev = 0;
-    if (GPIOA->IDR & GPIO_IDR_ID4) enc_prev |= 2; //CLK
-    if (GPIOA->IDR & GPIO_IDR_ID1) enc_prev |= 1; //DT
-
-    /*
-    PC9 (Lectura de frecuencia del PWM rojo)
-    */
-    SYSCFG->EXTICR[2] &= ~SYSCFG_EXTICR3_EXTI9; //Limpiamos
-    SYSCFG->EXTICR[2] |= SYSCFG_EXTICR3_EXTI9_PC; //La línea EXTI9 toma el pin 9 del puerto C
-    EXTI->RTSR |= EXTI_RTSR_TR9; //Disparo por flanco de subida (una vez por periodo)
-    EXTI->IMR |= EXTI_IMR_MR9; //Desenmascara la línea 9
-    NVIC_SetPriority(EXTI9_5_IRQn, 2); //Prioridad menor: interrumpe 20000 veces por segundo
-    __NVIC_EnableIRQ(EXTI9_5_IRQn); //Habilita la interrupción en el NVIC
 }
 
 void init_systick(void){
@@ -594,68 +533,109 @@ void init_systick(void){
     SysTick->CTRL |= SysTick_CTRL_ENABLE_Msk; //Arranca el contador, siempre de último
 }
 
+//TIM3: un solo timer para los 4 canales PWM (CH1 verde, CH2 azul, CH3 rojo, CH4 filtro)
 void init_timer3PWM(void){
     RCC->APB1ENR |= RCC_APB1ENR_TIM3EN; //Reloj del TIM3
 
     TIM3->PSC = PWM_PRESCALER; //Sin divisor: tick de 62.5 ns (16 MHz)
     TIM3->ARR = PWM_RELOAD; //Periodo: (799 + 1) ticks = 50 us -> 20 kHz
-    TIM3->CCR3 = 0; //Rojo apagado
+    TIM3->CCR1 = 0; //Verde (PA6) apagado
+    TIM3->CCR2 = 0; //Azul (PA7) apagado
+    TIM3->CCR3 = 0; //Rojo (PC8) apagado
     TIM3->CCR4 = 0; //Salida al filtro en 0 V
     TIM3->CR1 |= TIM_CR1_ARPE; //ARR con preload: el cambio de periodo no corta pulsos
 
+    TIM3->CCMR1 |= (TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2); //110: PWM modo 1 en el canal 1
+    TIM3->CCMR1 |= TIM_CCMR1_OC1PE; //CCR1 con preload
+    TIM3->CCMR1 |= (TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2); //110: PWM modo 1 en el canal 2
+    TIM3->CCMR1 |= TIM_CCMR1_OC2PE; //CCR2 con preload
     TIM3->CCMR2 |= (TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2); //110: PWM modo 1 en el canal 3
     TIM3->CCMR2 |= TIM_CCMR2_OC3PE; //CCR3 con preload
     TIM3->CCMR2 |= (TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2); //110: PWM modo 1 en el canal 4
     TIM3->CCMR2 |= TIM_CCMR2_OC4PE; //CCR4 con preload
-    TIM3->CCER |= (TIM_CCER_CC3E | TIM_CCER_CC4E); //Habilita la salida de los canales 3 y 4 al pin
+    TIM3->CCER |= (TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC4E); //Habilita la salida de los 4 canales al pin
     if (LED_COMMON_ANODE) {
-        TIM3->CCER |= TIM_CCER_CC3P; //Rojo con polaridad invertida (CC3P): duty 0 deja el pin en alto y el LED apagado. El canal 4 (filtro) no se invierte
+        TIM3->CCER |= (TIM_CCER_CC1P | TIM_CCER_CC2P | TIM_CCER_CC3P); //Verde, azul y rojo con polaridad invertida: duty 0 deja el pin en alto y el LED apagado. El canal 4 (filtro) no se invierte
     }
     TIM3->EGR |= TIM_EGR_UG; //Fuerza una actualización para cargar PSC, ARR y los CCR antes de arrancar
 
     TIM3->CR1 |= TIM_CR1_CEN; //Arranca el contador, siempre de último
 }
 
-void init_timer4PWM(void){
-    RCC->APB1ENR |= RCC_APB1ENR_TIM4EN; //Reloj del TIM4
-
-    TIM4->PSC = PWM_PRESCALER; //Sin divisor: tick de 62.5 ns (16 MHz)
-    TIM4->ARR = PWM_RELOAD; //Periodo: (799 + 1) ticks = 50 us -> 20 kHz
-    TIM4->CCR3 = 0; //Verde apagado
-    TIM4->CCR4 = 0; //Azul apagado
-    TIM4->CR1 |= TIM_CR1_ARPE; //ARR con preload: el cambio de periodo no corta pulsos
-
-    TIM4->CCMR2 |= (TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2); //110: PWM modo 1 en el canal 3
-    TIM4->CCMR2 |= TIM_CCMR2_OC3PE; //CCR3 con preload
-    TIM4->CCMR2 |= (TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2); //110: PWM modo 1 en el canal 4
-    TIM4->CCMR2 |= TIM_CCMR2_OC4PE; //CCR4 con preload
-    TIM4->CCER |= (TIM_CCER_CC3E | TIM_CCER_CC4E); //Habilita la salida de los canales 3 y 4 al pin
-    if (LED_COMMON_ANODE) {
-        TIM4->CCER |= (TIM_CCER_CC3P | TIM_CCER_CC4P); //Verde y azul con polaridad invertida: duty 0 deja el pin en alto y el LED apagado
-    }
-    TIM4->EGR |= TIM_EGR_UG; //Fuerza una actualización para cargar PSC, ARR y los CCR antes de arrancar
-
-    TIM4->CR1 |= TIM_CR1_CEN; //Arranca el contador, siempre de último
-}
-
-void init_timer2(void){
+//TIM2: contador libre de 32 bits con captura (input capture) en el canal 3
+void init_timer2Capture(void){
     RCC->APB1ENR |= RCC_APB1ENR_TIM2EN; //Reloj del TIM2
 
     TIM2->PSC = 0; //Sin divisor: cuenta a 16 MHz (1 cuenta = 62.5 ns)
-    TIM2->ARR = 0xFFFFFFFF; //TIM2 es de 32 bit: no se desborda hasta los 268 s, y la resta de dos lecturas aguanta el desborde
-    TIM2->EGR |= TIM_EGR_UG; //Fuerza una actualización para cargar PSC y ARR antes de arrancar
+    TIM2->ARR = 0xFFFFFFFF; //TIM2 es de 32 bit: no se desborda hasta los 268 s, y la resta de dos capturas aguanta el desborde
 
-    TIM2->CR1 |= TIM_CR1_CEN; //Arranca el contador, sin interrupciones: solo se lee TIM2->CNT
+    TIM2->CCMR2 &= ~TIM_CCMR2_CC3S; //Limpiamos
+    TIM2->CCMR2 |= TIM_CCMR2_CC3S_0; //01: el canal 3 es entrada y captura de TI3 (PB10), sin filtro ni divisor
+    TIM2->CCER &= ~(TIM_CCER_CC3P | TIM_CCER_CC3NP); //00: captura en el flanco de subida
+    TIM2->CCER |= TIM_CCER_CC3E; //Habilita la captura del canal 3
+    TIM2->DIER |= TIM_DIER_CC3IE; //Interrupción cuando hay una captura nueva
+    NVIC_SetPriority(TIM2_IRQn, 2); //Prioridad menor: interrumpe 20000 veces por segundo
+    __NVIC_EnableIRQ(TIM2_IRQn); //Habilita la interrupción en el NVIC
+
+    TIM2->EGR |= TIM_EGR_UG; //Fuerza una actualización para cargar PSC y ARR antes de arrancar
+    TIM2->SR = 0; //Limpia las banderas que dejó la actualización
+
+    TIM2->CR1 |= TIM_CR1_CEN; //Arranca el contador, siempre de último
+}
+
+//TIM9 (16 bits, APB2): interrumpe cada 500 us para leer el encoder
+void init_timer9Encoder(void){
+    RCC->APB2ENR |= RCC_APB2ENR_TIM9EN; //Reloj del TIM9
+
+    TIM9->PSC = 15; //16 MHz / 16 = 1 MHz: 1 cuenta = 1 us
+    TIM9->ARR = ENCODER_SAMPLE_ARR; //(499 + 1) us = 500 us -> 2 kHz
+    TIM9->EGR |= TIM_EGR_UG; //Carga PSC y ARR antes de arrancar
+    TIM9->SR &= ~TIM_SR_UIF; //Limpia la bandera que dejó la actualización
+    TIM9->DIER |= TIM_DIER_UIE; //Interrupción por desborde (update)
+    NVIC_SetPriority(TIM1_BRK_TIM9_IRQn, 1); //Misma prioridad que el botón
+    __NVIC_EnableIRQ(TIM1_BRK_TIM9_IRQn); //TIM9 comparte este vector con la interrupción de ruptura del TIM1, que no se usa
+
+    TIM9->CR1 |= TIM_CR1_CEN; //Arranca el contador, siempre de último
+}
+
+//TIM11 (16 bits, APB2): interrumpe cada BLINK_PERIOD_MS para el LED de estado
+void init_timer11Blink(void){
+    RCC->APB2ENR |= RCC_APB2ENR_TIM11EN; //Reloj del TIM11
+
+    TIM11->PSC = 15999; //16 MHz / 16000 = 1 kHz: 1 cuenta = 1 ms
+    TIM11->ARR = BLINK_PERIOD_MS - 1; //(249 + 1) ms = 250 ms
+    TIM11->EGR |= TIM_EGR_UG; //Carga PSC y ARR antes de arrancar
+    TIM11->SR &= ~TIM_SR_UIF; //Limpia la bandera que dejó la actualización
+    TIM11->DIER |= TIM_DIER_UIE; //Interrupción por desborde (update)
+    NVIC_SetPriority(TIM1_TRG_COM_TIM11_IRQn, 3); //Prioridad baja: el blinky puede esperar
+    __NVIC_EnableIRQ(TIM1_TRG_COM_TIM11_IRQn); //TIM11 comparte este vector con interrupciones del TIM1 que no se usan
+
+    TIM11->CR1 |= TIM_CR1_CEN; //Arranca el contador, siempre de último
 }
 
 /* Funciones ISR (solo registran el evento y regresan, sin lógica de la FSM) */
 
-//Cada milisegundo cuenta el tiempo y cada 250 ms deja la bandera del blinky
+//Cada milisegundo cuenta el tiempo (solo lo usa el antirrebote del botón)
 void SysTick_Handler(void)
 {
     ticks++; //Un ms más
-    if ((ticks % BLINK_PERIOD_MS) == 0) { //Si pasó el periodo del blinky
+}
+
+//Cada 250 ms (TIM11) deja la bandera del blinky
+void TIM1_TRG_COM_TIM11_IRQHandler(void)
+{
+    if(TIM11->SR & TIM_SR_UIF) {
+        TIM11->SR &= ~TIM_SR_UIF; //Se baja la bandera (en SR se limpia escribiendo 0)
         blink_flag = 1; //La FSM lo convierte en EV_BLINK_TICK
+    }
+}
+
+//Cada 500 us (TIM9) lee el encoder
+void TIM1_BRK_TIM9_IRQHandler(void)
+{
+    if(TIM9->SR & TIM_SR_UIF) {
+        TIM9->SR &= ~TIM_SR_UIF; //Se baja la bandera
+        encoder_Decode(); //La FSM lo convierte en EV_ENCODER_CHANGED cuando enc_steps no es 0
     }
 }
 
@@ -675,33 +655,14 @@ void EXTI0_IRQHandler(void)
     }
 }
 
-//Giro del encoder, CLK en PA4 (EXTI4 tiene su propio vector). Solo baja la bandera y decodifica el paso
-void EXTI4_IRQHandler(void)
+//Captura de TIM2 en el canal 3 (flanco de subida del PWM rojo (PC8) en PB10)
+void TIM2_IRQHandler(void)
 {
-    if(EXTI->PR & EXTI_PR_PR4) {
-        EXTI->PR = EXTI_PR_PR4; //Se baja escribiendo 1
-        encoder_Decode(); //La FSM lo convierte en EV_ENCODER_CHANGED cuando enc_steps no es 0
-    }
-}
+    uint32_t now; //Valor del contador que guardó el hardware en este flanco
 
-//Giro del encoder, DT en PA1 (EXTI1 tiene su propio vector)
-void EXTI1_IRQHandler(void)
-{
-    if(EXTI->PR & EXTI_PR_PR1) {
-        EXTI->PR = EXTI_PR_PR1; //Se baja escribiendo 1
-        encoder_Decode();
-    }
-}
+    if(TIM2->SR & TIM_SR_CC3IF) {
+        now = TIM2->CCR3; //Leer CCR3 baja la bandera CC3IF y da el instante exacto del flanco
 
-//Lectura de frecuencia en PC9 (EXTI9 comparte vector con las líneas 5 a 9)
-void EXTI9_5_IRQHandler(void)
-{
-    uint32_t now; //Valor del cronómetro en este flanco
-
-    if(EXTI->PR & EXTI_PR_PR9) {
-        EXTI->PR = EXTI_PR_PR9; //Se baja escribiendo 1
-
-        now = TIM2->CNT; //Lee el cronómetro de 32 bit
         if ((freq_edges != 0) && ((now - freq_last) > FREQ_TIMEOUT_CYCLES)) { //Pasó más de 1 ms sin flancos (el PWM se detuvo)
             freq_edges = 0; //Se descarta la ventana a medias
         }
