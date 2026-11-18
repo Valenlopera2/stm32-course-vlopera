@@ -91,7 +91,7 @@
 #define PWM_RELOAD 799         // Con (799 + 1) cuentas a 16 MHz el PWM es de 20 kHz
 #define LED_COMMON_ANODE 0     // 0 si el LED RGB es de cátodo común, 1 si es de ánodo común
 #define DUTY_MAX 800           // CCR para el 100 % de duty
-#define DUTY_STEP 50           // Cambio del duty por muesca del encoder (6.25 %)
+#define DUTY_STEP 25           // Cambio del duty por muesca del encoder (5 %)
 #define DUTY_IDLE 200          // Duty de los tres colores en el estado inicial (25 %)
 #define DUTY_INIT 0            // Duty con el que arranca cada modo al encender la placa
 #define ENCODER_DIR_SIGN 1     // Poner -1 si al girar a la derecha el duty baja
