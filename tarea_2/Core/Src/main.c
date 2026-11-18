@@ -18,7 +18,7 @@
 
 /*
  ******************************************************************************
- * TAREA #2 Valentina Lopera Urrego - TIMERS: SIMPLE, CAPTURA, PWM Y ENCODER (Taller V, 2026-S2)
+ * TAREA #2 Valentina Lopera Urrego - vlopera@unal.edu.co - c.c 1013337284 (Taller V, 2026-S2)
  *
  * DESCRIPCIÓN DEL SISTEMA
  * Un encoder rotatorio con su botón controla un LED RGB y una salida de voltaje DC,
